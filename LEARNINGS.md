@@ -124,3 +124,35 @@ Empirically compared chunk sizes on the same source text:
   related by `squared_L2_distance = 2 - 2 × cosine_similarity` — derived
   by hand to convert a reported Chroma `distance` back into an intuitive
   cosine similarity score.
+
+  Week 2: Generation & API
+5. Grounding instructions behave differently for "irrelevant context" vs. "empty context"
+
+Symptom: a question with no relevant stored content sometimes produced a fully hallucinated answer (e.g. a detailed pasta carbonara recipe from training knowledge) despite an explicit prompt instruction saying "answer using ONLY the context below."
+
+Root cause, found in two stages:
+
+First suspected the distance-based relevance filter (distance <= 1.5) was letting weak matches through. Investigated by printing the actual embedding vectors and re-running searches cleanly — this ruled out a filtering bug and also caught a stale-terminal-output red herring: two different queries appeared to produce an identical distance value, which turned out to be old output pasted alongside a new run, not a real result. Lesson: always verify printed output actually came from the code being discussed, especially across multiple terminal runs.
+With the filter confirmed correct, found the real cause: when new_context_chunks is genuinely empty, generate_answer() still gets called with an empty list, producing a prompt with a blank context section. The LLM does not reliably treat "context section is empty" the same as "context is irrelevant" — it tends to fall back to answering from training knowledge when given nothing, even with an explicit grounding instruction in the prompt.
+
+Fix: don't rely on the LLM to detect a zero-context situation. Add a deterministic check in answer_question() that short-circuits and returns the refusal message before calling the LLM at all, whenever no chunks survive the relevance filter:
+
+python
+if not new_context_chunks:
+    return "I don't have enough information to answer that.", []
+
+Broader lesson: this is the same principle as the source-citation design decision below — anywhere a fact can be determined with certainty in code, don't outsource that decision to the LLM's judgment, since LLM behavior on edge cases (especially empty/near-empty input) is inherently less predictable than explicit logic.
+
+6. Return-type consistency across all branches of a function
+
+Symptom: a function type-hinted as -> tuple[str, list[str]] returned a plain str on one branch and an actual tuple on another, which would crash any caller unpacking the result (answer, sources = ...).
+
+Root cause: Python type hints are documentation, not enforcement — nothing prevents a function from violating its own declared return type on a branch that's easy to overlook (in this case, the early-return "no context" branch, added after the main logic was already working).
+
+Fix: manually audited every return statement in the function and made sure each one matched the declared shape.
+
+Design decisions (Week 2 additions)
+Why source citations are appended in code (answer_question), not requested from the LLM in the prompt: the exact set of retrieved chunks (and their source files) is already known with certainty in Python before the LLM is ever called. Asking the LLM to self-report which sources it used risks hallucinated or misattributed citations, for no benefit — it's strictly worse than a value already available deterministically.
+Why generate_answer() doesn't handle source formatting or empty-context short-circuiting itself: keeping it scoped to "context + question → answer" keeps it independently testable and reusable (e.g. directly callable for future evaluation work) without unrelated formatting or control-flow logic mixed in.
+Why the FastAPI response returns answer and sources as separate structured fields, not one combined string: a plain string return was fine for direct Python calls, but over an HTTP API boundary, a consumer (frontend, another service) would have to parse sources back out of free text — fragile and unnecessary when Pydantic can just declare the real shape of the data.
+Why Ollama (local) during development, with an OpenAI-compatible client: the openai Python package is a client library that speaks a now-common request/response format, not something tied to OpenAI's own servers. Ollama implements that same format, so the exact same client code works locally for free during development, and can point at a hosted provider (e.g. Groq) later by only changing base_url and model name — relevant because free hosting tiers used for deployment don't have the compute to self-host an LLM the way a local machine can.

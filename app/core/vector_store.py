@@ -3,7 +3,7 @@ from app.core.chunker import chunk_text
 from app.core.embeddings import embed_texts
 from app.config import settings
 
-print(settings.chunk_size)
+
 client = chromadb.PersistentClient(path=settings.chroma_persist_dir)
 
 collection = client.get_or_create_collection(name=settings.collection_name)
@@ -50,7 +50,7 @@ def reset_collection():
 reset_collection()
 
 add_chunks("The stock market saw significant volatility today as investors reacted to inflation data.", source="finance.txt")
-print(collection.count())   
-results = search("What happened in financial markets?", top_k=2)
-for r in results:
-    print(r)
+# print(collection.count())   
+# results = search("What happened in financial markets?", top_k=2)
+# for r in results:
+#     print(r)
